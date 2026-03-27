@@ -49,9 +49,30 @@ resource "aws_iam_role_policy" "lambda_dynamodb_policy" {
       {
         Effect = "Allow"
         Action = [
-          "dynamodb:PutItem"
+          "dynamodb:PutItem",
+          "dynamodb:GetItem"
         ]
         Resource = aws_dynamodb_table.url_links.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "lambda_logs_policy" {
+  name = "url-shortener-logs-policy"
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
       }
     ]
   })
@@ -82,6 +103,12 @@ resource "aws_lambda_function" "shorten_url" {
 resource "aws_apigatewayv2_api" "url_shortener_api" {
   name          = "url-shortener-api"
   protocol_type = "HTTP"
+
+    cors_configuration {
+    allow_origins = ["*"]
+    allow_methods = ["GET", "POST", "OPTIONS"]
+    allow_headers = ["content-type"]
+    }
 }
 
 resource "aws_apigatewayv2_integration" "shorten_lambda_integration" {
@@ -94,6 +121,12 @@ resource "aws_apigatewayv2_integration" "shorten_lambda_integration" {
 resource "aws_apigatewayv2_route" "post_shorten" {
   api_id    = aws_apigatewayv2_api.url_shortener_api.id
   route_key = "POST /shorten"
+  target    = "integrations/${aws_apigatewayv2_integration.shorten_lambda_integration.id}"
+}
+
+resource "aws_apigatewayv2_route" "redirect_route" {
+  api_id    = aws_apigatewayv2_api.url_shortener_api.id
+  route_key = "GET /{short_id}"
   target    = "integrations/${aws_apigatewayv2_integration.shorten_lambda_integration.id}"
 }
 

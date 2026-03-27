@@ -1,13 +1,10 @@
 import json
-import os
+import boto3
 import random
 import string
-from datetime import datetime, timezone
-
-import boto3
 
 dynamodb = boto3.resource("dynamodb")
-table = dynamodb.Table(os.environ["TABLE_NAME"])
+table = dynamodb.Table("url-shortener-links")
 
 
 def generate_short_id(length=6):
@@ -16,46 +13,113 @@ def generate_short_id(length=6):
 
 
 def lambda_handler(event, context):
-    try:
-        body = json.loads(event.get("body", "{}"))
-        original_url = body.get("url")
+    http_method = event.get("requestContext", {}).get("http", {}).get("method")
 
-        if not original_url:
+    # POST: Create short URL
+    if http_method == "POST":
+        try:
+            body = json.loads(event.get("body", "{}"))
+            original_url = body.get("url")
+
+            if original_url and not original_url.startswith(("http://", "https://")):
+                original_url = "https://" + original_url
+
+            if not original_url:
+                return {
+                    "statusCode": 400,
+                    "headers": {
+                        "Content-Type": "application/json",
+                        "Access-Control-Allow-Origin": "*"
+                    },
+                    "body": json.dumps({"error": "Missing 'url' in request body"})
+                }
+
+            short_id = generate_short_id()
+
+            domain = event.get("requestContext", {}).get("domainName")
+            short_url = f"https://{domain}/{short_id}"
+
+            table.put_item(
+                Item={
+                    "short_id": short_id,
+                    "original_url": original_url
+                }
+            )
+
             return {
-                "statusCode": 400,
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps({"error": "Missing 'url' in request body"})
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*"
+                },
+                "body": json.dumps({
+                    "short_id": short_id,
+                    "original_url": original_url,
+                    "short_url": f"https://go.brandon-tucker.com/{short_id}"
+                })
             }
 
-        short_id = generate_short_id()
-        created_at = datetime.now(timezone.utc).isoformat()
+        except Exception as e:
+            return {
+                "statusCode": 500,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*"
+                },
+                "body": json.dumps({"error": str(e)})
+            }
 
-        item = {
-            "short_id": short_id,
-            "original_url": original_url,
-            "created_at": created_at,
-            "click_count": 0
-        }
+    # GET: Redirect short URL
+    elif http_method == "GET":
+        try:
+            short_id = event.get("pathParameters", {}).get("short_id")
 
-        table.put_item(Item=item)
+            if not short_id:
+                return {
+                    "statusCode": 400,
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": json.dumps({"error": "Missing short_id in path"})
+                }
 
-        base_url = os.environ.get("BASE_URL", "")
+            response = table.get_item(Key={"short_id": short_id})
+            item = response.get("Item")
 
-        response_body = {
-            "short_id": short_id,
-            "original_url": original_url,
-            "short_url": f"{base_url}/{short_id}" if base_url else short_id
-        }
+            if not item:
+                return {
+                    "statusCode": 404,
+                    "headers": {
+                        "Content-Type": "application/json"
+                    },
+                    "body": json.dumps({"error": "Short URL not found"})
+                }
 
+            original_url = item["original_url"]
+
+            return {
+                "statusCode": 302,
+                "headers": {
+                    "Location": original_url
+                },
+                "body": ""
+            }
+
+        except Exception as e:
+            return {
+                "statusCode": 500,
+                "headers": {
+                    "Content-Type": "application/json"
+                },
+                "body": json.dumps({"error": str(e)})
+            }
+
+    else:
         return {
-            "statusCode": 200,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps(response_body)
-        }
-
-    except Exception as e:
-        return {
-            "statusCode": 500,
-            "headers": {"Content-Type": "application/json"},
-            "body": json.dumps({"error": str(e)})
+            "statusCode": 405,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*"
+            },
+            "body": json.dumps({"error": "Method not allowed"})
         }
